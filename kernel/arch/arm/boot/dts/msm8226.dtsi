@@ -284,7 +284,6 @@
 		qcom,hsusb-otg-otg-control = <2>;
 		qcom,dp-manual-pullup;
 		qcom,ahb-async-bridge-bypass;
-		qcom,usbin-vadc = <&pm8226_vadc>;
 
 		qcom,msm-bus,name = "usb";
 		qcom,msm-bus,num-cases = <3>;
@@ -407,6 +406,7 @@
 		qcom,adsp-state = <0>;
 	};
 
+/* LGE_UPDATE beekey@lge.com This's for WCD9306. WX use WCD9302.
 	sound {
 		compatible = "qcom,msm8226-audio-tapan";
 		qcom,model = "msm8226-tapan-snd-card";
@@ -417,6 +417,7 @@
 		qcom,prim-auxpcm-gpio-dout = <&msmgpio 66 0>;
 		qcom,prim-auxpcm-gpio-set = "prim-gpio-prim";
 	};
+*/	
 
 	sound-9302 {
 		compatible = "qcom,msm8226-audio-tapan";
@@ -645,7 +646,7 @@
 		compatible = "qcom,msm-watchdog";
 		reg = <0xf9017000 0x1000>;
 		interrupts = <0 3 0>, <0 4 0>;
-		qcom,bark-time = <11000>;
+		qcom,bark-time = <15000>;
 		qcom,pet-time = <10000>;
 		qcom,ipi-ping;
 	};
@@ -963,6 +964,21 @@
 		qcom,pmic-arb-channel = <0>;
 	};
 
+	i2c@f9924000 { /* BLSP-1 QUP2 */
+		cell-index = <3>;
+		compatible = "qcom,i2c-qup";
+		reg = <0xf9924000 0x1000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg-names = "qup_phys_addr";
+		interrupts = <0 96 0>;
+		interrupt-names = "qup_err_intr";
+		qcom,i2c-bus-freq = <384000>;
+		qcom,i2c-src-freq = <19200000>;
+		#qcom,master-id = <86>;
+		qcom,scl-gpio = <&msmgpio 10 0>;
+		qcom,sda-gpio = <&msmgpio 11 0>;
+	};
 	i2c@f9925000 { /* BLSP-1 QUP-3 */
 		cell-index = <2>;
 		compatible = "qcom,i2c-qup";
@@ -1015,6 +1031,20 @@
 			< 384000000 1>,
 			< 787200000 2>,
 			<1190400000 3>;
+		qcom,speed1-bin-v2 =
+			<         0 0>,
+			< 192000000 2>,
+			< 300000000 2>,
+			< 384000000 2>,
+			< 787200000 4>,
+			< 998400000 5>,
+			<1094400000 6>,
+			<1190400000 7>,
+			<1305600000 8>,
+			<1344000000 9>,
+			<1401600000 10>,
+			<1497600000 11>,
+			<1593600000 12>;
 
 		cpu-vdd-supply = <&apc_vreg_corner>;
 	};
@@ -1026,25 +1056,27 @@
 			< 1525 /* 200 MHz */ >,
 			< 2441 /* 320 MHz */ >,
 			< 3051 /* 400 MHz */ >,
-			< 4066 /* 533 MHz */ >;
+			< 4066 /* 533 MHz */ >,
+ 			< 4575 /* 600 MHz */ >;
 	};
 
 	qcom,msm-cpufreq@0 {
-		reg = <0 4>;
+		reg = <0 5>;
 		compatible = "qcom,msm-cpufreq";
 		qcom,cpufreq-table =
-			<  300000 1525 >,
-			<  384000 1525 >,
-			<  600000 1525 >,
+            <  192000 1525 >,
+			<  300000 2441 >,
+			<  384000 3051 >,
+			<  600000 3051 >,
 			<  787200 3051 >,
 			<  998400 4066 >,
 			< 1094400 4066 >,
-			< 1190400 4066 >,
-			< 1305600 4066 >,
-			< 1344000 4066 >,
-			< 1401600 4066 >,
-			< 1497600 4066 >,
-			< 1593600 4066 >;
+			< 1190400 4575 >,
+			< 1305600 4575 >,
+			< 1344000 4575 >,
+			< 1401600 4575 >,
+			< 1497600 4575 >,
+			< 1593600 4575 >;
 	};
 
 	qcom,ocmem@fdd00000 {
@@ -1304,16 +1336,15 @@
 		qcom,disk-encrypt-pipe-pair = <2>;
 		qcom,hlos-ce-hw-instance = <0>;
 		qcom,qsee-ce-hw-instance = <0>;
-		qcom,support-bus-scaling;
 		qcom,msm-bus,name = "qseecom-noc";
 		qcom,msm-bus,num-cases = <4>;
 		qcom,msm-bus,active-only = <0>;
 		qcom,msm-bus,num-paths = <1>;
 		qcom,msm-bus,vectors-KBps =
 				<55 512 0 0>,
-				<55 512 0 0>,
-				<55 512 120000 1200000>,
-				<55 512 393600 3936000>;
+				<55 512 3936000 393600>,
+				<55 512 3936000 393600>,
+				<55 512 3936000 393600>;
 	};
 
 	qcom,qcrypto@fd404000 {
@@ -1505,7 +1536,6 @@
 		qcom,hw-settle-time = <2>;
 		qcom,fast-avg-setup = <3>;
 		qcom,btm-channel-number = <0x48>;
-		qcom,meas-interval-timer-idx = <2>;
 	};
 
 	chan@8 {
