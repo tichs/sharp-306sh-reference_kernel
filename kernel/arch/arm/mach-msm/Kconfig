@@ -1928,6 +1928,13 @@ config MSM_AVS_HW
 	  AVS hardware blocks associated with each Qualcomm ARMv7 cores can
 	  fine tune the voltages based on the feedback from the ring
 	  oscillators.
+	 
+config CPU_OVERCLOCK
+	bool "enable CPU overclocking of Cortex A7"
+	default n
+	help
+	  Simple CPU Overclocking Option to 1.6 GHz
+
 
 config MSM_HW3D
 	tristate "MSM Hardware 3D Register Driver"
