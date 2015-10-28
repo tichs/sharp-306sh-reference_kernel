@@ -157,6 +157,21 @@ struct shtps_facetouch_info{
 	u8							wakelock_state;
 	struct wake_lock            wake_lock;
 	struct pm_qos_request		qos_cpu_latency;
+	
+#if defined( SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE )
+	int							facetouch_off_notify_delayed_state;
+	int							facetouch_off_force_flg;
+	struct delayed_work			notify_interval_delayed_work;
+	
+	struct wake_lock            facetouch_off_delayed_wake_lock;
+	struct pm_qos_request		facetouch_off_delayed_qos;
+#endif /* SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE */
+	
+#if defined( SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE )
+	int							rezero_disable;
+#endif /* SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE */
+	
+	
 };
 
 struct shtps_offset_info{
@@ -244,6 +259,7 @@ struct shtps_deter_suspend_spi{
 	struct work_struct			pending_proc_work;
 	u8							wake_lock_state;
 	struct wake_lock			wake_lock;
+	struct pm_qos_request		pm_qos_lock_idle;
 	
 	#ifdef SHTPS_DEVELOP_MODE_ENABLE
 		struct delayed_work			pending_proc_work_delay;
@@ -335,6 +351,24 @@ struct shtps_scan_freq_change{
 	unsigned char						reg_freq[2];
 };
 #endif /* SHTPS_DEF_SCAN_FREQ_DYNAMIC_CHANGE_ENABLE */
+
+#if defined(SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE)
+struct shtps_filter_topofscreen_ghost_reject_info{
+	u8						is_ghost[SHTPS_FINGER_MAX];
+	unsigned long			timeout[SHTPS_FINGER_MAX];
+	struct delayed_work		ghost_clear_check_delayed_work;
+};
+
+enum{
+	TOP_OF_SCREEN_GHOST_NOT_DETECTED,
+	TOP_OF_SCREEN_GHOST_DETECTED,
+};
+
+enum{
+	TOP_OF_SCREEN_GHOST_NOT_CLEARED,
+	TOP_OF_SCREEN_GHOST_CLEARED,
+};
+#endif /* SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE */
 
 struct shtps_rmi_spi {
 	struct spi_device*			spi;
@@ -521,6 +555,10 @@ struct shtps_rmi_spi {
 	#if defined(SHTPS_DEF_SCAN_FREQ_DYNAMIC_CHANGE_ENABLE)
 		struct shtps_scan_freq_change	scan_freq_change;
 	#endif /* SHTPS_DEF_SCAN_FREQ_DYNAMIC_CHANGE_ENABLE */
+
+	#if defined(SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE)
+		struct shtps_filter_topofscreen_ghost_reject_info	topofscreen_ghost_reject;
+	#endif /* SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE */
 };
 
 static dev_t 					shtpsif_devid;
@@ -1991,12 +2029,14 @@ static void shtps_suspend_spi_wake_lock(struct shtps_rmi_spi *ts, u8 lock)
 		if(ts->deter_suspend_spi.wake_lock_state == 0){
 			ts->deter_suspend_spi.wake_lock_state = 1;
 			wake_lock(&ts->deter_suspend_spi.wake_lock);
+			pm_qos_update_request(&ts->deter_suspend_spi.pm_qos_lock_idle, SHTPS_QOS_LATENCY_DEF_VALUE);
 		    SHTPS_LOG_DBG_PRINT("[suspend spi] wake_lock\n");
 		}
 	}else{
 		if(ts->deter_suspend_spi.wake_lock_state == 1){
 			ts->deter_suspend_spi.wake_lock_state = 0;
 			wake_unlock(&ts->deter_suspend_spi.wake_lock);
+			pm_qos_update_request(&ts->deter_suspend_spi.pm_qos_lock_idle, PM_QOS_DEFAULT_VALUE);
 		    SHTPS_LOG_DBG_PRINT("[suspend spi] wake_unlock\n");
 		}
 	}
@@ -2128,13 +2168,13 @@ static void shtps_clr_suspend_state(struct shtps_rmi_spi *ts)
 			break;
 		}
 	}
+	mutex_unlock(&shtps_proc_lock);
 	
 	if(hold_process){
 		shtps_exec_suspend_pending_proc(ts);
 	}else{
 		shtps_suspend_spi_wake_lock(ts, 0);
 	}
-	mutex_unlock(&shtps_proc_lock);
 
 	mutex_lock(&shtps_ctrl_lock);
 	if(ts->deter_suspend_spi.suspend_irq_detect != 0){
@@ -2166,6 +2206,31 @@ static void shtps_clr_suspend_state(struct shtps_rmi_spi *ts)
 #if defined( CONFIG_SHTPS_SY3000_FACETOUCH_OFF_DETECT )
 static inline int shtps_get_fingermax(struct shtps_rmi_spi *ts);
 
+#if defined( SHTPS_FACETOUCH_OFF_DETECT_CHG_REPORTMODE_ENABLE )
+static void shtps_get_reporting_mode(struct shtps_rmi_spi *ts, u8* val)
+{
+	shtps_rmi_read(ts, ts->map.fn11.ctrlBase, val, 1);
+	return;
+}
+
+static void shtps_set_reporting_mode(struct shtps_rmi_spi *ts, u8 mode)
+{
+	u8 now_val;
+	u8 val;
+	
+	if(SHTPS_FACETOUCH_DETECT_CHG_REPORTING_MODE_ENABLE == 0) return;
+	
+	shtps_get_reporting_mode(ts, &now_val);
+
+	val = (now_val & (0xFF << 3)) | mode;
+	
+	shtps_rmi_write(ts, ts->map.fn11.ctrlBase, val);
+	SHTPS_LOG_DBG_PRINT("change reporting mode (0x%02x)\n", val);
+
+	return;
+}
+#endif /* SHTPS_FACETOUCH_OFF_DETECT_CHG_REPORTMODE_ENABLE */
+
 static int shtps_get_facetouchmode(struct shtps_rmi_spi *ts)
 {
 	SHTPS_LOG_FUNC_CALL();
@@ -2179,6 +2244,9 @@ static void shtps_set_facetouchmode(struct shtps_rmi_spi *ts, int mode)
 	ts->facetouch.mode = mode;
 	if(mode == 0){
 		ts->facetouch.detect = 0;
+#if defined( SHTPS_FACETOUCH_OFF_DETECT_CHG_REPORTMODE_ENABLE )
+		shtps_set_reporting_mode(ts, SHTPS_FACETOUCH_DETECT_REPORTING_MODE_DEFAULT);
+#endif /* SHTPS_FACETOUCH_OFF_DETECT_CHG_REPORTMODE_ENABLE */
 	}
 }
 
@@ -2231,6 +2299,15 @@ static void shtps_facetouch_init(struct shtps_rmi_spi *ts)
 	ts->facetouch.palm_det = 0;
 	ts->facetouch.wakelock_state = 0;
 	ts->facetouch.touch_num = 0;
+
+	#if defined( SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE )
+		ts->facetouch.facetouch_off_notify_delayed_state = 0;
+		ts->facetouch.facetouch_off_force_flg = 0;
+	#endif /* SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE */
+
+	#if defined( SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE )
+		ts->facetouch.rezero_disable = 0;
+	#endif /* SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE */
 
 	init_waitqueue_head(&ts->facetouch.wait_off);
     wake_lock_init(&ts->facetouch.wake_lock, WAKE_LOCK_SUSPEND, "shtps_facetouch_wake_lock");
@@ -2302,6 +2379,74 @@ static void shtps_event_all_cancel(struct shtps_rmi_spi *ts)
 	}
 }
 
+#if defined( SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE )
+static void shtps_delayed_facetouch_off_notify_wakelock(struct shtps_rmi_spi *ts, int on)
+{
+	if(on){
+		wake_lock(&ts->facetouch.facetouch_off_delayed_wake_lock);
+		pm_qos_update_request(&ts->facetouch.facetouch_off_delayed_qos, SHTPS_QOS_LATENCY_DEF_VALUE);
+		SHTPS_LOG_DBG_PRINT("%s(): wake_lock\n", __func__);
+	}else{
+		wake_unlock(&ts->facetouch.facetouch_off_delayed_wake_lock);
+		pm_qos_update_request(&ts->facetouch.facetouch_off_delayed_qos, PM_QOS_DEFAULT_VALUE);
+		SHTPS_LOG_DBG_PRINT("%s(): wake_unlock\n", __func__);
+	}
+}
+
+static void shtps_delayed_facetouch_off_notify_function(struct work_struct *work)
+{
+	struct delayed_work *dw = container_of(work, struct delayed_work, work);
+	struct shtps_facetouch_info *fi = container_of(dw, struct shtps_facetouch_info, notify_interval_delayed_work);
+	struct shtps_rmi_spi *ts = container_of(fi, struct shtps_rmi_spi, facetouch);
+
+	SHTPS_LOG_FUNC_CALL();
+
+
+	if(ts->facetouch.state != 0 || ts->facetouch.facetouch_off_force_flg != 0){
+		shtps_facetouch_wakelock(ts, 1);
+		ts->facetouch.state = 0;
+		ts->facetouch.detect = 1;
+		wake_up_interruptible(&ts->facetouch.wait_off);
+		SHTPS_LOG_DBG_PRINT("face touch off detect(force flag = %d). wake_up() (by chatter timer)\n", ts->facetouch.facetouch_off_force_flg);
+	}else{
+		SHTPS_LOG_DBG_PRINT("touch off detect but pre-state isn't face touch (chatter timer).\n");
+	}
+
+	ts->facetouch.facetouch_off_notify_delayed_state = 0;
+	ts->facetouch.facetouch_off_force_flg = 0;
+	
+	shtps_delayed_facetouch_off_notify_wakelock(ts, 0);
+	
+}
+
+static void shtps_delayed_facetouch_off_notify(struct shtps_rmi_spi *ts, int delay)
+{
+	SHTPS_LOG_FUNC_CALL();
+	if(ts->facetouch.facetouch_off_notify_delayed_state == 0){
+		shtps_delayed_facetouch_off_notify_wakelock(ts, 1);
+		schedule_delayed_work(&ts->facetouch.notify_interval_delayed_work, msecs_to_jiffies(delay));
+		ts->facetouch.facetouch_off_notify_delayed_state = 1;
+		SHTPS_FACETOUCH_OFF_DETECT_CHATT_PRINT("delayed facetouch_off notify.... [%d]ms", delay);
+	}
+}
+
+static void shtps_delayed_facetouch_off_notify_cancel(struct shtps_rmi_spi *ts)
+{
+	SHTPS_LOG_FUNC_CALL();
+	if(ts->facetouch.facetouch_off_notify_delayed_state == 1){
+		shtps_delayed_facetouch_off_notify_wakelock(ts, 0);
+		cancel_delayed_work(&ts->facetouch.notify_interval_delayed_work);
+		ts->facetouch.facetouch_off_notify_delayed_state = 0;
+		ts->facetouch.facetouch_off_force_flg = 0;
+	}
+	
+	#if defined( SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE )
+		ts->facetouch.rezero_disable = 0;
+	#endif /* SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE */
+	
+}
+#endif /* SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE */
+
 static void shtps_notify_facetouch(struct shtps_rmi_spi *ts)
 {
 	if(ts->facetouch.state == 0){
@@ -2317,15 +2462,39 @@ static void shtps_notify_facetouch(struct shtps_rmi_spi *ts)
 
 static void shtps_notify_facetouchoff(struct shtps_rmi_spi *ts, int force)
 {
+#if defined( SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE )
+	if(ts->facetouch.state != 0 || force != 0){
+		if(ts->facetouch.facetouch_off_notify_delayed_state == 0){
+			ts->facetouch.facetouch_off_force_flg = force;
+			
+			#if defined( SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE )
+				ts->facetouch.rezero_disable = 1;
+			#endif /* SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE */
+			
+			shtps_delayed_facetouch_off_notify(ts, SHTPS_FACETOUCH_OFF_DETECT_CHATT_THRESH_TIME);
+		}else{
+			SHTPS_FACETOUCH_OFF_DETECT_CHATT_PRINT("already detect facetouch off. watiting....");
+		}
+	}else{
+		shtps_delayed_facetouch_off_notify_cancel(ts);
+		SHTPS_LOG_DBG_PRINT("touch off detect but pre-state isn't face touch.\n");
+	}
+#else
 	if(ts->facetouch.state != 0 || force != 0){
 		shtps_facetouch_wakelock(ts, 1);
 		ts->facetouch.state = 0;
 		ts->facetouch.detect = 1;
+		
+		#if defined( SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE )
+			ts->facetouch.rezero_disable = 1;
+		#endif /* SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE */
+		
 		wake_up_interruptible(&ts->facetouch.wait_off);
 		SHTPS_LOG_DBG_PRINT("face touch off detect(force flag = %d). wake_up()\n", force);
 	}else{
 		SHTPS_LOG_DBG_PRINT("touch off detect but pre-state isn't face touch.\n");
 	}
+#endif /* SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE */
 }
 
 static void shtps_check_facetouch(struct shtps_rmi_spi *ts, struct shtps_touch_info *info)
@@ -2469,6 +2638,15 @@ static void shtps_read_touchevent_infacetouchmode(struct shtps_rmi_spi *ts)
 			}
 		}
 	}
+	
+	#if defined( SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE )
+		if(ts->facetouch.facetouch_off_notify_delayed_state == 1){
+			if(info.finger_num > 0){
+				shtps_delayed_facetouch_off_notify_cancel(ts);
+				SHTPS_FACETOUCH_OFF_DETECT_CHATT_PRINT("Detect touch. cancel touch off notify timer");
+			}
+		}
+	#endif /* SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE */
 	
 	ts->facetouch.touch_num = info.finger_num;
 
@@ -7086,6 +7264,267 @@ static void shtps_scan_freq_dynamic_change_check(struct shtps_rmi_spi *ts, struc
 }
 #endif /* SHTPS_DEF_SCAN_FREQ_DYNAMIC_CHANGE_ENABLE */
 
+#if defined(SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE)
+static int shtps_filter_topofscreen_ghost_reject_ghost_check(struct shtps_rmi_spi *ts, u8 finger)
+{
+	int ret = TOP_OF_SCREEN_GHOST_NOT_DETECTED;
+	int i;
+	int fingerMax = shtps_get_fingermax(ts);
+	int numOfSamelineFingers = 0;
+	int numOfBottomAreaFingers = 0;
+	int bottomAreaZMax = 0;
+	unsigned long diff;
+	
+	if(ts->topofscreen_ghost_reject.is_ghost[finger] != 0){
+		return TOP_OF_SCREEN_GHOST_DETECTED;
+	}
+	
+	if(ts->fw_report_info_store.fingers[finger].state == SHTPS_TOUCH_STATE_NO_TOUCH &&
+		ts->fw_report_info.fingers[finger].state != SHTPS_TOUCH_STATE_NO_TOUCH)
+	{
+		if(ts->fw_report_info.fingers[finger].y <= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_Y_THRESH &&
+		   ts->fw_report_info.fingers[finger].z <= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_Z_THRESH)
+		{
+			for(i = 0;i < fingerMax;i++){
+				if(i == finger || ts->fw_report_info.fingers[i].state == SHTPS_TOUCH_STATE_NO_TOUCH){
+					continue;
+				}
+				
+				diff = abs(ts->fw_report_info.fingers[i].x - ts->fw_report_info.fingers[finger].x);
+				
+				if(diff <= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_XDIFF_THRESH &&
+				   ts->fw_report_info.fingers[i].y  >  ts->fw_report_info.fingers[finger].y  &&
+				   ts->fw_report_info.fingers[i].z  >  ts->fw_report_info.fingers[finger].z  &&
+				   ts->fw_report_info.fingers[i].wx >= ts->fw_report_info.fingers[finger].wx &&
+				   ((ts->fw_report_info.fingers[finger].z * 100) / ts->fw_report_info.fingers[i].z) < SHTPS_TOP_OF_SCREEN_GHOST_REJECT_Z_RATIO_THRESH)
+				{
+					numOfSamelineFingers++;
+					if(numOfSamelineFingers >= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_FINGER_NUM_THRESH ||
+					   ts->fw_report_info.fingers[i].wy >= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_FINGER_WY_THRESH)
+					{
+						ret = TOP_OF_SCREEN_GHOST_DETECTED;
+						SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("[%d] detect ghost\n", finger);
+						break;
+					}
+				}
+				
+				if(SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_CHECK_ENABLE){
+					if(ts->fw_report_info.fingers[i].y > SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_CHECK_AREA){
+						numOfBottomAreaFingers++;
+						bottomAreaZMax = (bottomAreaZMax < ts->fw_report_info.fingers[i].z)? ts->fw_report_info.fingers[i].z : bottomAreaZMax;
+					}
+				}
+			}
+		}
+		
+		if(SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_CHECK_ENABLE){
+			if(ret != TOP_OF_SCREEN_GHOST_DETECTED){
+				if(bottomAreaZMax == 255 ||
+				   (numOfBottomAreaFingers >= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_FINGER_NUM_THRESH &&
+				    bottomAreaZMax >= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_FINGER_Z_THRESH))
+				{
+					if(ts->fw_report_info.fingers[finger].y <= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_Y_THRESH &&
+					   ts->fw_report_info.fingers[finger].z <= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_Z_THRESH)
+					{
+						ret = TOP_OF_SCREEN_GHOST_DETECTED;
+						SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("[%d] detect ghost by bottom palm touch\n", finger);
+					}
+				}
+			}
+		}
+	}
+	
+	return ret;
+}
+
+static int shtps_filter_topofscreen_ghost_reject_ghost_clear_check(struct shtps_rmi_spi *ts, u8 finger)
+{
+	int i;
+	int fingerMax = shtps_get_fingermax(ts);
+	int numOfBottomAreaFingers = 0;
+	int bottomAreaZMax = 0;
+	unsigned long diff;
+
+	if(ts->topofscreen_ghost_reject.is_ghost[finger] == 0){
+		return TOP_OF_SCREEN_GHOST_CLEARED;
+	}
+	
+	if(ts->fw_report_info.fingers[finger].state == SHTPS_TOUCH_STATE_NO_TOUCH){
+		SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("[%d] clear ghost by touch-state\n", finger);
+		return TOP_OF_SCREEN_GHOST_CLEARED;
+	}
+	
+	if(time_after(jiffies, ts->topofscreen_ghost_reject.timeout[finger])){
+		SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("[%d] clear ghost by time\n", finger);
+		return TOP_OF_SCREEN_GHOST_CLEARED;
+	}
+	
+	if(ts->fw_report_info.fingers[finger].y > SHTPS_TOP_OF_SCREEN_GHOST_REJECT_Y_THRESH ||
+	   ts->fw_report_info.fingers[finger].z > SHTPS_TOP_OF_SCREEN_GHOST_REJECT_Z_THRESH)
+	{
+		SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("[%d] clear ghost by ypos(%d) or z(%d)\n", finger,
+			ts->fw_report_info.fingers[finger].y, ts->fw_report_info.fingers[finger].z);
+		return TOP_OF_SCREEN_GHOST_CLEARED;
+	}
+	
+	for(i = 0;i < fingerMax;i++){
+		if(i == finger || ts->fw_report_info.fingers[i].state == SHTPS_TOUCH_STATE_NO_TOUCH){
+			continue;
+		}
+		
+		diff = abs(ts->fw_report_info.fingers[i].x - ts->fw_report_info.fingers[finger].x);
+		
+		if(diff <= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_XDIFF_THRESH){
+			return TOP_OF_SCREEN_GHOST_NOT_CLEARED;
+		}
+		
+		if(SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_CHECK_ENABLE){
+			if(ts->fw_report_info.fingers[i].y > SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_CHECK_AREA){
+				numOfBottomAreaFingers++;
+				bottomAreaZMax = (bottomAreaZMax < ts->fw_report_info.fingers[i].z)? ts->fw_report_info.fingers[i].z : bottomAreaZMax;
+			}
+		}
+	}
+	
+	if(SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_CHECK_ENABLE){
+		if(bottomAreaZMax == 255 ||
+		   (numOfBottomAreaFingers >= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_FINGER_NUM_THRESH &&
+		    bottomAreaZMax >= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_FINGER_Z_THRESH))
+		{
+			if(ts->fw_report_info.fingers[finger].z <= SHTPS_TOP_OF_SCREEN_GHOST_REJECT_BOTTOM_Z_THRESH){
+				return TOP_OF_SCREEN_GHOST_NOT_CLEARED;
+			}
+		}
+	}
+
+	SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("[%d] clear ghost by other finger\n", finger);
+	return TOP_OF_SCREEN_GHOST_CLEARED;
+}
+
+/* -------------------------------------------------------------------------- */
+static void shtps_filter_topofscreen_ghost_reject_clear_check_timer_start(struct shtps_rmi_spi *ts)
+{
+	int i;
+	int fingerMax   = shtps_get_fingermax(ts);
+	u8 isNeedWork   = 0;
+	unsigned long timeoutTime = 0;
+	unsigned long tempTime;
+
+	for(i = 0;i < fingerMax;i++){
+		if(ts->topofscreen_ghost_reject.is_ghost[i] != 0){
+			isNeedWork = 1;
+			tempTime   = ts->topofscreen_ghost_reject.timeout[i] - jiffies;
+			
+			SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("[%d] timeout = %lu\n", i, tempTime);
+			if(timeoutTime == 0 || timeoutTime < tempTime){
+				timeoutTime = tempTime;
+			}
+		}
+	}
+	
+	if(isNeedWork){
+		if(timeoutTime == 0){
+			timeoutTime = 1;
+		}
+		SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("start timer (%d ms)\n", jiffies_to_msecs(timeoutTime));
+		cancel_delayed_work(&ts->topofscreen_ghost_reject.ghost_clear_check_delayed_work);
+		schedule_delayed_work(&ts->topofscreen_ghost_reject.ghost_clear_check_delayed_work, timeoutTime);
+	}
+}
+
+/* -------------------------------------------------------------------------- */
+static void shtps_filter_topofscreen_ghost_reject_clear_check_timer_cancel(struct shtps_rmi_spi *ts)
+{
+	SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("cancel ghost check work\n");
+	cancel_delayed_work(&ts->topofscreen_ghost_reject.ghost_clear_check_delayed_work);
+}
+
+/* -------------------------------------------------------------------------- */
+static void shtps_filter_topofscreen_ghost_reject_clear_check_delayed_work_function(struct work_struct *work)
+{
+	struct delayed_work *dw = container_of(work, struct delayed_work, work);
+	struct shtps_filter_topofscreen_ghost_reject_info *tgri = container_of(dw, struct shtps_filter_topofscreen_ghost_reject_info, ghost_clear_check_delayed_work);
+	struct shtps_rmi_spi *ts = container_of(tgri, struct shtps_rmi_spi, topofscreen_ghost_reject);
+
+	SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("start ghost check work\n");
+
+	mutex_lock(&shtps_ctrl_lock);
+	if(ts->state_mgr.state == SHTPS_STATE_ACTIVE || ts->state_mgr.state == SHTPS_STATE_FACETOUCH){
+		int i;
+		int fingerMax = shtps_get_fingermax(ts);
+		u8 isStateChange = 0;
+		
+		for(i = 0;i < fingerMax;i++){
+			if(ts->topofscreen_ghost_reject.is_ghost[i] != 0){
+				if(shtps_filter_topofscreen_ghost_reject_ghost_clear_check(ts, i) == TOP_OF_SCREEN_GHOST_CLEARED){
+					isStateChange = 1;
+					ts->topofscreen_ghost_reject.is_ghost[i] = 0;
+				}
+			}
+		}
+		
+		if(isStateChange){
+			shtps_read_touchevent(ts, ts->state_mgr.state);
+		}
+		
+		shtps_filter_topofscreen_ghost_reject_clear_check_timer_start(ts);
+	}
+	mutex_unlock(&shtps_ctrl_lock);
+
+	SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("end ghost check work\n");
+	
+	return;
+}
+
+/* -------------------------------------------------------------------------- */
+void shtps_filter_topofscreen_ghost_reject_check(struct shtps_rmi_spi *ts, struct shtps_touch_info *info)
+{
+	int i;
+	int fingerMax = shtps_get_fingermax(ts);
+
+	if(!SHTPS_TOP_OF_SCREEN_GHOST_REJECT_ENABLE){
+		return;
+	}
+	
+	for(i = 0;i < fingerMax;i++){
+		if(ts->topofscreen_ghost_reject.is_ghost[i] == 0){
+			if(shtps_filter_topofscreen_ghost_reject_ghost_check(ts, i) == TOP_OF_SCREEN_GHOST_DETECTED){
+				ts->topofscreen_ghost_reject.is_ghost[i] = 1;
+				ts->topofscreen_ghost_reject.timeout[i]  = jiffies + msecs_to_jiffies(SHTPS_TOP_OF_SCREEN_GHOST_REJECT_CLEAR_TIME);
+			}
+		}else{
+			if(shtps_filter_topofscreen_ghost_reject_ghost_clear_check(ts, i) == TOP_OF_SCREEN_GHOST_CLEARED){
+				ts->topofscreen_ghost_reject.is_ghost[i] = 0;
+			}
+		}
+	}
+
+	for(i = 0;i < fingerMax;i++){
+		if(ts->topofscreen_ghost_reject.is_ghost[i] != 0){
+			info->fingers[i].state = SHTPS_TOUCH_STATE_NO_TOUCH;
+			SHTPS_LOG_DBG_TOP_OF_SCREEN_GHOST_PRINT("[%d] reject ghost\n", i);
+		}
+	}
+	
+	shtps_filter_topofscreen_ghost_reject_clear_check_timer_start(ts);
+}
+
+/* -------------------------------------------------------------------------- */
+void shtps_filter_topofscreen_ghost_reject_forcetouchup(struct shtps_rmi_spi *ts)
+{
+	shtps_filter_topofscreen_ghost_reject_clear_check_timer_cancel(ts);
+	memset(ts->topofscreen_ghost_reject.is_ghost, 0, sizeof(ts->topofscreen_ghost_reject.is_ghost));
+}
+
+/* -------------------------------------------------------------------------- */
+void shtps_filter_topofscreen_ghost_reject_init(struct shtps_rmi_spi *ts)
+{
+	memset(ts->topofscreen_ghost_reject.is_ghost, 0, sizeof(ts->topofscreen_ghost_reject.is_ghost));
+	INIT_DELAYED_WORK(&ts->topofscreen_ghost_reject.ghost_clear_check_delayed_work, 
+		shtps_filter_topofscreen_ghost_reject_clear_check_delayed_work_function);
+}
+#endif /* SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE */
+
 static void shtps_calc_notify(struct shtps_rmi_spi *ts, u8 *buf, struct shtps_touch_info *info, u8 *event)
 {
 	int		i;
@@ -7117,6 +7556,10 @@ static void shtps_calc_notify(struct shtps_rmi_spi *ts, u8 *buf, struct shtps_to
 	#if defined(SHTPS_DEF_SCAN_FREQ_DYNAMIC_CHANGE_ENABLE)
 		shtps_scan_freq_dynamic_change_check(ts, info);
 	#endif /* SHTPS_DEF_SCAN_FREQ_DYNAMIC_CHANGE_ENABLE */
+
+	#if defined(SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE)
+		shtps_filter_topofscreen_ghost_reject_check(ts, info);
+	#endif /* SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE */
 
 	if(ts->state_mgr.state == SHTPS_STATE_FACETOUCH){
 		#if defined(SHTPS_GRIP_FAIL_TOUCH_REJECTION_ENABLE)
@@ -7483,6 +7926,10 @@ static void shtps_event_force_touchup(struct shtps_rmi_spi *ts)
 		ts->lgm_split_touch_combining.finger_swap = 0;
 		ts->lgm_split_touch_combining.finger_adjust = 0;
 	#endif  /* SHTPS_LGM_SPLIT_TOUCH_COMBINING_ENABLE */
+
+	#if defined(SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE)
+		shtps_filter_topofscreen_ghost_reject_forcetouchup(ts);
+	#endif  /* SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE */
 
 	#if defined( SHTPS_TOUCHCANCEL_BEFORE_FORCE_TOUCHUP_ENABLE )
 		for(i = 0;i < fingerMax;i++){
@@ -10208,6 +10655,10 @@ static int shtps_statef_sleep_facetouch_enter(struct shtps_rmi_spi *ts, int para
 	
 	shtps_event_all_cancel(ts);
 
+#if defined( SHTPS_FACETOUCH_OFF_DETECT_CHG_REPORTMODE_ENABLE )
+	shtps_set_reporting_mode(ts, SHTPS_FACETOUCH_DETECT_REPORTING_MODE);
+#endif /* SHTPS_FACETOUCH_OFF_DETECT_CHG_REPORTMODE_ENABLE */
+
 	return 0;
 #else
 	#if defined( SHTPS_LOW_POWER_MODE_ENABLE )
@@ -10245,6 +10696,10 @@ static int shtps_statef_sleep_facetouch_wakeup(struct shtps_rmi_spi *ts, int par
 {
 #if defined( CONFIG_SHTPS_SY3000_FACETOUCH_OFF_DETECT )
 	shtps_facetouch_wakelock(ts, 0);
+	
+#if defined( SHTPS_FACETOUCH_OFF_DETECT_CHG_REPORTMODE_ENABLE )
+	shtps_set_reporting_mode(ts, SHTPS_FACETOUCH_DETECT_REPORTING_MODE_DEFAULT);
+#endif /* SHTPS_FACETOUCH_OFF_DETECT_CHG_REPORTMODE_ENABLE */
 
 	#if defined( SHTPS_FACETOUCH_OFF_DETECT_DOZE_ENABLE )
 		if(shtps_is_lpmode(ts) == 0){
@@ -10268,7 +10723,19 @@ static int shtps_statef_sleep_facetouch_wakeup(struct shtps_rmi_spi *ts, int par
 	shtps_system_set_wakeup(ts);
 	shtps_sleep(ts, 0);
 #endif /* #if defined( CONFIG_SHTPS_SY3000_FACETOUCH_OFF_DETECT ) */
+
+#if defined( SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE )
+	if(ts->facetouch.rezero_disable == 1 && SHTPS_FACETOUCHOFF_DETECT_SKIP_REZERO_ENABLE == 1){
+		ts->facetouch.rezero_disable = 0;
+		SHTPS_LOG_DBG_PRINT("Detect face touch off. skip rezero...\n");
+	}else{
+		shtps_rezero_request(ts, SHTPS_REZERO_REQUEST_WAKEUP_REZERO, 0);
+	}
+#else
 	shtps_rezero_request(ts, SHTPS_REZERO_REQUEST_WAKEUP_REZERO, 0);
+#endif /* SHTPS_FACETOUCH_OFF_DETECT_SKIP_REZERO_ENABLE */
+
+
 	state_change(ts, SHTPS_STATE_FACETOUCH);
 	return 0;
 }
@@ -13261,6 +13728,7 @@ static int shtps_init_internal_variables(struct shtps_rmi_spi *ts)
 	    ts->deter_suspend_spi.wake_lock_state = 0;
 		memset(&ts->deter_suspend_spi, 0, sizeof(ts->deter_suspend_spi));
 	    wake_lock_init(&ts->deter_suspend_spi.wake_lock, WAKE_LOCK_SUSPEND, "shtps_resume_wake_lock");
+		pm_qos_add_request(&ts->deter_suspend_spi.pm_qos_lock_idle, PM_QOS_CPU_DMA_LATENCY, PM_QOS_DEFAULT_VALUE);
 		INIT_WORK(&ts->deter_suspend_spi.pending_proc_work, shtps_deter_suspend_spi_pending_proc_work_function);
 		#ifdef SHTPS_DEVELOP_MODE_ENABLE
 			INIT_DELAYED_WORK(&ts->deter_suspend_spi.pending_proc_work_delay, shtps_deter_suspend_spi_pending_proc_delayed_work_function);
@@ -13334,6 +13802,16 @@ static int shtps_init_internal_variables(struct shtps_rmi_spi *ts)
 	#if defined(SHTPS_DEF_SCAN_FREQ_DYNAMIC_CHANGE_ENABLE)
 		shtps_scan_freq_dynamic_change_init(ts);
 	#endif /* SHTPS_DEF_SCAN_FREQ_DYNAMIC_CHANGE_ENABLE */
+
+	#if defined(SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE)
+		shtps_filter_topofscreen_ghost_reject_init(ts);
+	#endif  /* SHTPS_TOP_OF_SCREEN_GHOST_REJECTION_ENABLE */
+
+	#if defined( SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE )
+		INIT_DELAYED_WORK(&ts->facetouch.notify_interval_delayed_work, shtps_delayed_facetouch_off_notify_function);
+	    wake_lock_init(&ts->facetouch.facetouch_off_delayed_wake_lock, WAKE_LOCK_SUSPEND, "shtps_faceoff_delayed_wake_lock");
+		pm_qos_add_request(&ts->facetouch.facetouch_off_delayed_qos, PM_QOS_CPU_DMA_LATENCY, PM_QOS_DEFAULT_VALUE);
+	#endif /* SHTPS_FACETOUCH_OFF_DETECT_CHATTER_CHK_ENABLE */
 
 	shtps_performance_check_init();
 	return 0;
