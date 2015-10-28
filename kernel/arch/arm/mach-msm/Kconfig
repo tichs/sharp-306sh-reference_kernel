@@ -179,7 +179,6 @@ config ARCH_MSM8960
 	select MSM_USE_USER_ACCESSIBLE_TIMERS
 	select MSM_CPU_PWRCTL
 	select MSM_LPM_TEST
-	select HAS_MACH_MEMUTILS
 
 config ARCH_MSM8930
 	bool "MSM8930"
@@ -531,7 +530,6 @@ config ARCH_MSM8226
 	select MSM_RPM_STATS_LOG
 	select ARCH_WANT_KMAP_ATOMIC_FLUSH
 	select ENABLE_VMALLOC_SAVINGS
-	select HAS_MACH_MEMUTILS
 
 config ARCH_MSMSAMARIUM
 	bool "MSMSAMARIUM"
@@ -1141,15 +1139,25 @@ config MACH_FSM9XXX_SURF
 	  chipset based SURF evaluation board and
 	  FFA board.
 
+config MACH_ZEPPELI
+	depends on ARCH_MSM8226
+	bool "SHARP ZEPPELI"
+	help
+	  Support for Sharp ZEPPELI.
+
+config MACH_PA25
+	depends on ARCH_MSM8226
+	bool "SHARP PA25"
+	help
+	  Support for Sharp sg305sh.
+
+config MACH_PB25
+	depends on ARCH_MSM8226
+	bool "SHARP PB25"
+	help
+	  Support for Sharp sg306sh.
+
 endmenu
-
-
-# LGE_CHANGED_BEGIN
-# lge specific kconfig
-# jungsu06.kim@lge.com
-source "arch/arm/mach-msm/lge/Kconfig"
-# LGE_CHANGED_END
-
 
 config MSM_STACKED_MEMORY
 	bool "Stacked Memory"
@@ -1889,7 +1897,7 @@ config MSM_CPU_FREQ_SET_MIN_MAX
 config MSM_CPU_FREQ_MAX
 	int "Max CPU Frequency"
 	depends on MSM_CPU_FREQ_SET_MIN_MAX
-	default 1593600
+	default 384000
 
 config MSM_CPU_FREQ_MIN
 	int "Min CPU Frequency"
@@ -1911,13 +1919,6 @@ config MSM_DEVFREQ_CPUBW
 	  DDR IB/AB bandwidth votes. This driver provides a SoC topology
 	  agnostic interface to so that some of the devfreq governors can be
 	  shared across SoCs.
-
-config CPU_OVERCLOCK
-	bool "enable CPU overclocking of Cortex A7"
-	default n
-	help
-	  Simple CPU Overclocking Option to 1.6 GHz
-
 
 config MSM_AVS_HW
 	bool "Enable Adaptive Voltage Scaling (AVS)"
@@ -2766,8 +2767,6 @@ config MSM_OCMEM_POWER_DISABLE
 
 config SENSORS_ADSP
 	bool "Enable Sensors Driver Support for ADSP"
-	depends on (ARCH_MSM8226 || ARCH_MSM8974)
-	default y
 	help
 	  Add support for sensors ADSP driver.
 	  This driver is used for exercising different sensors use cases,
@@ -3073,10 +3072,67 @@ config KRAIT_REGULATOR
 	 regulators running in ganged mode inside the PMIC. Enable
 	 this option to support such configurations.
 
-config HAS_MACH_MEMUTILS
+config SHSYS_CUST
+       bool "SHARP SYSTEM CUSTOMIZE"
+       default n
+
+config SHBOOT_CUST
+       bool "SHARP BOOT CUSTOMIZE"
+       depends on SHSYS_CUST
+
+config SHSECBOOT_CUST
+	bool "SHARP SECBOOT CUSTOMIZE"
+	default y
+
+config SHSYS_CUST_DEBUG
+	depends on SHSYS_CUST
+	default y
+	bool "SHARP SYSTEM CUSTOMIZE DEBUG"
+
+config SH_SLEEP_LOG
+	default y
+	bool "SHARP CUSTOMIZE SLEEP LOG"
+
+config SH_SHUTDOWN_FAILSAFE
+       bool "SHARP CUSTOMIZE Shutdown fail safe"
+       default y
+       help
+        for shutdown fail safe
+
+config SH_PRINTK_MOD
+       bool "SHARP CONSOLE_UNLOCK MODIFY"
+       default y
+       help
+        mod console_unlock in printk.c
+
+config SHWDTIME_CUST
+       bool "SHARP WATCHDOG CUSTOMIZE"
+       default y
+       help
+        extend watchdog kick time for 3 seconds
+
+config PERFLOCK
+	bool "HTC Performance Lock"
 	default n
-	bool "Motorola MSM memcpy enhancements"
-	help
-	Faster memcpy performance for Krait
+
+config SHSYS_CUST_PERFLOCK
+	bool "SHARP Performance Lock"
+	depends on PERFLOCK
+	default n
+
+config PERFLOCK_BOOT_LOCK
+	bool "Boot Time Performance Lock"
+	depends on PERFLOCK
+	default n
+
+config PERFLOCK_SUSPEND_LOCK
+	bool "Suspend Time Performance Lock"
+	depends on PERFLOCK
+	default n
+
+config SHSYS_CUST_USER_PERFLOCK
+	bool "Perflock User"
+	depends on PERFLOCK
+	default n
 
 endif
